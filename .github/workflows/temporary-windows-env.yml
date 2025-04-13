@@ -1,59 +1,111 @@
-name: Temporary Windows Environment Session
+name: Temporary Windows VNC Session via ngrok
 
-# Trigger manually from the Actions tab
 on:
-  workflow_dispatch:
+  workflow_dispatch: # Manual trigger
 
 jobs:
-  windows_session:
-    # Job name in the UI
-    name: Start Temporary Windows Session (Max 6 hours)
-    # Runner environment
+  windows_vnc_session:
+    name: Start Temporary Windows VNC Session (Max 6 hours)
     runs-on: windows-latest
-
-    # Maximum job duration in minutes (GitHub's typical limit for public/paid plans)
     timeout-minutes: 360
 
-    # Sequence of tasks to perform
     steps:
-      # Step 1: Get the repository code
       - name: Check out repository code
         uses: actions/checkout@v4
 
-      # Step 2: Optional environment setup (customize here)
-      - name: Setup Environment (Customize as needed)
-        # Use PowerShell on Windows runners
+      - name: Generate VNC Password
+        id: generate_password
         shell: pwsh
         run: |
-          echo "Setting up the environment..."
-          # --- ADD YOUR SETUP COMMANDS HERE ---
-          # Example using Chocolatey (package manager for Windows):
-          # choco install --no-progress -y nodejs-lts git python maven
-          #
-          # Example using setup actions:
-          # - name: Setup .NET SDK
-          #   uses: actions/setup-dotnet@v3
-          #   with:
-          #     dotnet-version: '6.0.x'
-          # --- END OF CUSTOM SETUP ---
+          # Generate an 8-character random alphanumeric password for VNC
+          $vncPassword = -join ((65..90) + (97..122) + (48..57) | Get-Random -Count 8 | % {[char]$_})
+          Write-Host "Generated temporary VNC password."
+          # Mask the password in logs
+          Write-Host "::add-mask::$vncPassword"
+          # Set it as an output for later steps
+          echo "vnc_password=$vncPassword" >> $env:GITHUB_OUTPUT
 
-          echo "Environment setup complete (or skipped)."
-          echo "Starting tmate session for interactive access..."
+      - name: Install TightVNC Server via Chocolatey
+        shell: pwsh
+        run: |
+          choco install tightvnc --params "/NoViewer /Silent" -y --no-progress
+          # Add VNC Server bin path to PATH temporarily for this session
+          # Common path, might need adjustment if choco installs elsewhere in future
+          echo "C:\Program Files\TightVNC\" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
-      # Step 3: Start the interactive session using tmate
-      # This step will pause the workflow and print connection details in the logs.
-      - name: Setup tmate session for Debugging / Interaction
-        uses: mxschmitt/action-tmate@v3
-        # Optional: You could add a shorter timeout for just this step
-        # timeout-minutes: 355 # e.g., 5 mins less than job timeout
-        # Optional: Add 'with' block for tmate options if needed
-        # with:
-        #   sudo: false # sudo is typically not available/needed on Windows runners
+      - name: Configure and Start TightVNC Server
+        shell: pwsh
+        env:
+          # Get the generated password from the previous step's output
+          VNC_PASSWORD: ${{ steps.generate_password.outputs.vnc_password }}
+        run: |
+          Write-Host "Configuring TightVNC Server..."
+          # Set the required passwords using registry commands
+          # Primary Password (for full control)
+          tvnserver.exe -setpassword $env:VNC_PASSWORD
+          # View-Only Password (set same as primary for simplicity here)
+          tvnserver.exe -setviewonlypassword $env:VNC_PASSWORD
 
-      # Step 4: Cleanup message (runs after tmate finishes or job times out)
-      # The 'if: always()' ensures this runs even if previous steps fail or are cancelled.
-      - name: Session Ended
+          # Other optional settings via registry if needed (use with caution)
+          # e.g., New connections: reg add "HKLM\SOFTWARE\TightVNC\Server" /v AcceptHttpConnectons /t REG_DWORD /d 1 /f
+
+          Write-Host "Starting TightVNC Server service..."
+          # Start the VNC Server service
+          Start-Service tvnserver
+
+          # Verify service is running (optional)
+          Get-Service tvnserver | Select-Object -Property Status, Name, DisplayName
+
+          Write-Host "TightVNC Server should be running."
+
+      - name: Start ngrok tunnel for VNC
+        # Uses the official ngrok action: https://github.com/ngrok/ngrok-github-action
+        uses: ngrok/ngrok-github-action@v1.1.0
+        with:
+          # Port VNC server listens on (default for TightVNC is 5900)
+          port: 5900
+          # Protocol is TCP for VNC
+          protocol: tcp
+          # Your ngrok authtoken from GitHub secrets
+          authtoken: ${{ secrets.NGROK_AUTHTOKEN }}
+          # Log level (optional)
+          # loglevel: debug
+        id: ngrok # Give the step an ID to access its output
+
+      # IMPORTANT: This step keeps the job running!
+      # ngrok action runs in the background. We need a foreground task to prevent the job ending.
+      # We'll print connection details and then sleep.
+      - name: Display Connection Info and Keep Job Alive
+        shell: pwsh
+        env:
+          VNC_PASSWORD: ${{ steps.generate_password.outputs.vnc_password }}
+          NGROK_URL: ${{ steps.ngrok.outputs.url }} # Get the public URL from the ngrok step output
+        run: |
+          Write-Host "-----------------------------------------------------"
+          Write-Host "VNC Session Ready (via ngrok Tunnel)"
+          Write-Host "-----------------------------------------------------"
+          Write-Host "Use a VNC Viewer on your local machine to connect to:"
+          Write-Host "Ngrok Address: ${{ steps.ngrok.outputs.url }}" # Example: tcp://0.tcp.ngrok.io:12345
+          Write-Host "Password:      $env:VNC_PASSWORD"
+          Write-Host "-----------------------------------------------------"
+          Write-Host "IMPORTANT NOTES:"
+          Write-Host "* This is VNC, not RDP. Performance may vary."
+          Write-Host "* The ngrok address looks like 'tcp://HOSTNAME:PORT'."
+          Write-Host "* In your VNC Viewer, connect to HOSTNAME using PORT."
+          Write-Host "* Example: If address is tcp://2.tcp.ngrok.io:12345, connect to '2.tcp.ngrok.io' on port '12345'."
+          Write-Host "* This session will automatically end when the job times out (~6 hours) or is cancelled."
+          Write-Host "-----------------------------------------------------"
+
+          # Keep the script running to prevent the job from ending immediately
+          # Sleep for a very long time (slightly less than max timeout)
+          Write-Host "Keeping job alive... Press Ctrl+C in VNC session if needed, but job runs until timeout."
+          Start-Sleep -Seconds 21000 # Sleep for ~5 hours 50 minutes
+
+      # This step will likely only run if the sleep is interrupted or the job is cancelled early.
+      - name: Session Ending
         if: always()
         shell: pwsh
         run: |
-          echo "tmate session ended or job timed out."
+          Write-Host "VNC session job is ending."
+          # Attempt graceful shutdown (might not always work if job is killed abruptly)
+          Stop-Service tvnserver -Force -ErrorAction SilentlyContinue
