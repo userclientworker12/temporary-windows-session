@@ -1,62 +1,59 @@
 name: Temporary Windows Environment Session
 
+# Trigger manually from the Actions tab
 on:
-  workflow_dispatch: # Allows manual triggering from the Actions tab
+  workflow_dispatch:
 
 jobs:
   windows_session:
+    # Job name in the UI
     name: Start Temporary Windows Session (Max 6 hours)
-    runs-on: windows-latest # Use a Windows Server runner provided by GitHub
+    # Runner environment
+    runs-on: windows-latest
 
-    # Set the maximum timeout for the job in minutes (6 hours = 360 minutes)
-    # Note: Free accounts might have shorter limits, but 360 is typical for public repos/paid plans.
+    # Maximum job duration in minutes (GitHub's typical limit for public/paid plans)
     timeout-minutes: 360
 
+    # Sequence of tasks to perform
     steps:
-    - name: Check out repository code
-      uses: actions/checkout@v4
+      # Step 1: Get the repository code
+      - name: Check out repository code
+        uses: actions/checkout@v4
 
-    - name: Setup Environment (Customize as needed)
-      run: |
-        echo "Setting up the environment..."
-        # Add commands here to install software you need using Chocolatey (choco)
-        # For example:
-        # choco install --no-progress -y nodejs-lts dotnet-sdk git python
-        # choco install --no-progress -y googlechrome visualstudiocode
-        #
-        # Or use setup actions:
-        # - name: Setup .NET
-        #   uses: actions/setup-dotnet@v3
-        #   with:
-        #     dotnet-version: '6.0.x'
-        #
-        # - name: Setup Java
-        #   uses: actions/setup-java@v3
-        #   with:
-        #     distribution: 'temurin'
-        #     java-version: '17'
+      # Step 2: Optional environment setup (customize here)
+      - name: Setup Environment (Customize as needed)
+        # Use PowerShell on Windows runners
+        shell: pwsh
+        run: |
+          echo "Setting up the environment..."
+          # --- ADD YOUR SETUP COMMANDS HERE ---
+          # Example using Chocolatey (package manager for Windows):
+          # choco install --no-progress -y nodejs-lts git python maven
+          #
+          # Example using setup actions:
+          # - name: Setup .NET SDK
+          #   uses: actions/setup-dotnet@v3
+          #   with:
+          #     dotnet-version: '6.0.x'
+          # --- END OF CUSTOM SETUP ---
 
-        echo "Environment setup complete (or skipped if no commands added)."
-        echo "Starting tmate session for interactive access..."
-      shell: pwsh # Use PowerShell
+          echo "Environment setup complete (or skipped)."
+          echo "Starting tmate session for interactive access..."
 
-    - name: Setup tmate session for Debugging / Interaction
-      # This action creates an SSH or Web Shell connection into the runner.
-      # Connection details will be printed in the workflow logs.
-      # The job will remain active as long as the tmate session is open or until timeout.
-      uses: mxschmitt/action-tmate@v3
-      # You can add timeout for the tmate step itself if needed,
-      # but the job timeout (360 mins) is the ultimate limit.
-      # timeout-minutes: 355 # Example: Give 5 mins buffer before job timeout
-      with:
-        # Optional: limit access, e.g., install sudo if needed by tmate
-        # sudo: true # May require specific runner configurations or permissions
+      # Step 3: Start the interactive session using tmate
+      # This step will pause the workflow and print connection details in the logs.
+      - name: Setup tmate session for Debugging / Interaction
+        uses: mxschmitt/action-tmate@v3
+        # Optional: You could add a shorter timeout for just this step
+        # timeout-minutes: 355 # e.g., 5 mins less than job timeout
+        # Optional: Add 'with' block for tmate options if needed
+        # with:
+        #   sudo: false # sudo is typically not available/needed on Windows runners
 
-    # The workflow will pause here at the tmate step.
-    # It will only proceed (and finish) if the tmate session is exited
-    # or if the job's 6-hour timeout is reached.
-
-    - name: Session Ended
-      if: always() # Always run this step, even if tmate timed out or failed
-      run: |
-        echo "tmate session ended or job timed out."
+      # Step 4: Cleanup message (runs after tmate finishes or job times out)
+      # The 'if: always()' ensures this runs even if previous steps fail or are cancelled.
+      - name: Session Ended
+        if: always()
+        shell: pwsh
+        run: |
+          echo "tmate session ended or job timed out."
