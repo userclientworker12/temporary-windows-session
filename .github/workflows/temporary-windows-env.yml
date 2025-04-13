@@ -1,11 +1,11 @@
-name: Temporary Windows VNC Session via ngrok
+name: Temporary Windows RDP Session via ngrok
 
 on:
   workflow_dispatch: # Manual trigger
 
 jobs:
-  windows_vnc_session:
-    name: Start Temporary Windows VNC Session (Max 6 hours)
+  windows_rdp_session:
+    name: Start Temporary Windows RDP Session (Max 6 hours)
     runs-on: windows-latest
     timeout-minutes: 360
 
@@ -13,99 +13,105 @@ jobs:
       - name: Check out repository code
         uses: actions/checkout@v4
 
-      - name: Generate VNC Password
-        id: generate_password
+      - name: Prepare Runner for RDP and Generate Password
+        id: prepare_rdp
         shell: pwsh
         run: |
-          # Generate an 8-character random alphanumeric password for VNC
-          $vncPassword = -join ((65..90) + (97..122) + (48..57) | Get-Random -Count 8 | % {[char]$_})
-          Write-Host "Generated temporary VNC password."
+          # --- Generate and Set Password ---
+          $password = -join ((65..90) + (97..122) + (48..57) + (33..47) | Get-Random -Count 16 | % {[char]$_})
+          $username = $env:USERNAME # Get the current runner username (e.g., runneradmin)
+          Write-Host "Setting password for user '$username'..."
+          # Use net user command to set password
+          $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
+          try {
+              net user $username $password
+              Write-Host "Password set successfully for $username."
+          } catch {
+              Write-Error "Failed to set password for $username. Error: $_"
+              exit 1 # Fail the job if password cannot be set
+          }
+
           # Mask the password in logs
-          Write-Host "::add-mask::$vncPassword"
-          # Set it as an output for later steps
-          echo "vnc_password=$vncPassword" >> $env:GITHUB_OUTPUT
+          Write-Host "::add-mask::$password"
+          # Set outputs for later steps
+          echo "rdp_username=$username" >> $env:GITHUB_OUTPUT
+          echo "rdp_password=$password" >> $env:GITHUB_OUTPUT
+          Write-Host "Generated temporary RDP password for user $username."
 
-      - name: Install TightVNC Server via Chocolatey
-        shell: pwsh
-        run: |
-          choco install tightvnc --params "/NoViewer /Silent" -y --no-progress
-          # Add VNC Server bin path to PATH temporarily for this session
-          # Common path, might need adjustment if choco installs elsewhere in future
-          echo "C:\Program Files\TightVNC\" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          # --- Enable RDP ---
+          Write-Host "Enabling Remote Desktop..."
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -value 0 -Force
 
-      - name: Configure and Start TightVNC Server
-        shell: pwsh
-        env:
-          # Get the generated password from the previous step's output
-          VNC_PASSWORD: ${{ steps.generate_password.outputs.vnc_password }}
-        run: |
-          Write-Host "Configuring TightVNC Server..."
-          # Set the required passwords using registry commands
-          # Primary Password (for full control)
-          tvnserver.exe -setpassword $env:VNC_PASSWORD
-          # View-Only Password (set same as primary for simplicity here)
-          tvnserver.exe -setviewonlypassword $env:VNC_PASSWORD
+          # --- Configure Firewall ---
+          Write-Host "Configuring Windows Firewall for RDP..."
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
 
-          # Other optional settings via registry if needed (use with caution)
-          # e.g., New connections: reg add "HKLM\SOFTWARE\TightVNC\Server" /v AcceptHttpConnectons /t REG_DWORD /d 1 /f
+          # Optional: Disable Network Level Authentication (NLA) - Less secure, might help compatibility in weird network setups
+          # Uncomment the next line if you face NLA-related connection issues (try without it first!)
+          # Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -value 0 -Force
+          # Write-Host "NLA Disabled (Less Secure)."
 
-          Write-Host "Starting TightVNC Server service..."
-          # Start the VNC Server service
-          Start-Service tvnserver
 
-          # Verify service is running (optional)
-          Get-Service tvnserver | Select-Object -Property Status, Name, DisplayName
+          # Optional: Verify RDP Service is running
+          $rdpService = Get-Service -Name TermService
+          Write-Host "Remote Desktop Service (TermService) status: $($rdpService.Status)"
+          if ($rdpService.Status -ne 'Running') {
+              Write-Host "Attempting to start TermService..."
+              Start-Service -Name TermService
+              Start-Sleep -Seconds 5 # Give it a moment to start
+              $rdpService = Get-Service -Name TermService
+              Write-Host "New TermService status: $($rdpService.Status)"
+          }
 
-          Write-Host "TightVNC Server should be running."
+          Write-Host "Runner preparation complete."
 
-      - name: Start ngrok tunnel for VNC
-        # Uses the official ngrok action: https://github.com/ngrok/ngrok-github-action
+      - name: Start ngrok tunnel for RDP (Port 3389)
         uses: ngrok/ngrok-github-action@v1.1.0
+        id: ngrok # Give the step an ID to access its output
         with:
-          # Port VNC server listens on (default for TightVNC is 5900)
-          port: 5900
-          # Protocol is TCP for VNC
+          # Port RDP server listens on
+          port: 3389
+          # Protocol is TCP
           protocol: tcp
           # Your ngrok authtoken from GitHub secrets
           authtoken: ${{ secrets.NGROK_AUTHTOKEN }}
-          # Log level (optional)
-          # loglevel: debug
-        id: ngrok # Give the step an ID to access its output
+          # Optional: Define a specific ngrok subdomain/region if you have a paid plan
+          # domain: your-reserved-domain.ngrok.io
+          # region: us
 
       # IMPORTANT: This step keeps the job running!
-      # ngrok action runs in the background. We need a foreground task to prevent the job ending.
-      # We'll print connection details and then sleep.
       - name: Display Connection Info and Keep Job Alive
         shell: pwsh
         env:
-          VNC_PASSWORD: ${{ steps.generate_password.outputs.vnc_password }}
-          NGROK_URL: ${{ steps.ngrok.outputs.url }} # Get the public URL from the ngrok step output
+          RDP_USERNAME: ${{ steps.prepare_rdp.outputs.rdp_username }}
+          RDP_PASSWORD: ${{ steps.prepare_rdp.outputs.rdp_password }}
+          NGROK_URL: ${{ steps.ngrok.outputs.url }} # Get public URL from ngrok step
         run: |
           Write-Host "-----------------------------------------------------"
-          Write-Host "VNC Session Ready (via ngrok Tunnel)"
+          Write-Host "RDP Session Ready (via ngrok Tunnel)"
           Write-Host "-----------------------------------------------------"
-          Write-Host "Use a VNC Viewer on your local machine to connect to:"
-          Write-Host "Ngrok Address: ${{ steps.ngrok.outputs.url }}" # Example: tcp://0.tcp.ngrok.io:12345
-          Write-Host "Password:      $env:VNC_PASSWORD"
+          Write-Host "Use Remote Desktop Connection on your local machine:"
+          Write-Host "Computer:      ${{ steps.ngrok.outputs.url }}" # Example: tcp://0.tcp.ngrok.io:12345
+          Write-Host "Username:      $env:RDP_USERNAME"
+          Write-Host "Password:      $env:RDP_PASSWORD"
           Write-Host "-----------------------------------------------------"
           Write-Host "IMPORTANT NOTES:"
-          Write-Host "* This is VNC, not RDP. Performance may vary."
-          Write-Host "* The ngrok address looks like 'tcp://HOSTNAME:PORT'."
-          Write-Host "* In your VNC Viewer, connect to HOSTNAME using PORT."
-          Write-Host "* Example: If address is tcp://2.tcp.ngrok.io:12345, connect to '2.tcp.ngrok.io' on port '12345'."
+          Write-Host "* The address looks like 'tcp://HOSTNAME:PORT'."
+          Write-Host "* In Remote Desktop Connection, enter HOSTNAME:PORT"
+          Write-Host "*   (e.g., '2.tcp.ngrok.io:12345') as the 'Computer'."
+          Write-Host "* Performance will likely be POOR and LAGGY."
           Write-Host "* This session will automatically end when the job times out (~6 hours) or is cancelled."
           Write-Host "-----------------------------------------------------"
 
-          # Keep the script running to prevent the job from ending immediately
-          # Sleep for a very long time (slightly less than max timeout)
-          Write-Host "Keeping job alive... Press Ctrl+C in VNC session if needed, but job runs until timeout."
-          Start-Sleep -Seconds 21000 # Sleep for ~5 hours 50 minutes
+          # Keep the script running
+          Write-Host "Keeping job alive... Session active until timeout or cancellation."
+          Start-Sleep -Seconds 21000 # ~5 hours 50 minutes
 
-      # This step will likely only run if the sleep is interrupted or the job is cancelled early.
+      # Final step, runs when job ends/is cancelled
       - name: Session Ending
         if: always()
         shell: pwsh
         run: |
-          Write-Host "VNC session job is ending."
-          # Attempt graceful shutdown (might not always work if job is killed abruptly)
-          Stop-Service tvnserver -Force -ErrorAction SilentlyContinue
+          Write-Host "RDP session job is ending."
+          # Maybe try to disable RDP again? (Might not execute if job is killed)
+          # Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -value 1 -Force -ErrorAction SilentlyContinue
