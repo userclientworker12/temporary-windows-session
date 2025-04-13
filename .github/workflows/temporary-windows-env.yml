@@ -65,8 +65,10 @@ jobs:
 
           Write-Host "Runner preparation complete."
 
+      # ***** CHANGE IS HERE *****
       - name: Start ngrok tunnel for RDP (Port 3389)
-        uses: ngrok/ngrok-github-action@v1.1.0
+        uses: ngrok/ngrok-github-action@v1 # Use the major version tag @v1 instead of @v1.1.0
+      # ***** END OF CHANGE *****
         id: ngrok # Give the step an ID to access its output
         with:
           # Port RDP server listens on
