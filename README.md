@@ -1,45 +1,49 @@
-# Temporary Windows Environment via GitHub Actions
+# Temporary Windows RDP Session via GitHub Actions & ngrok
 
-This repository contains a GitHub Actions workflow to launch a temporary Windows environment running on a GitHub-hosted runner.
+This workflow attempts to provide a temporary **RDP-based** graphical Windows desktop session running on a GitHub Actions runner, tunneled via ngrok.
 
-**Features:**
+**EXTREME WARNINGS APPLY:**
 
-*   Uses `windows-latest` runner.
-*   Sets maximum job timeout (usually 6 hours).
-*   Provides interactive access **via SSH or Web Shell** using `tmate`.
-*   Allows customization for installing tools (edit the workflow file).
+*   **HIGHLY EXPERIMENTAL & UNRELIABLE:** This is NOT a standard or supported use case for GitHub Actions. It pushes the boundaries and may break without notice due to changes in the runner environment.
+*   **POOR PERFORMANCE:** RDP over internet tunnels like ngrok is **extremely sensitive to latency**. Expect significant lag, slow screen updates, and a potentially unusable experience for many tasks.
+*   **SECURITY RISK:** Enabling RDP and tunneling it publicly (even via an obscure ngrok URL) increases the security exposure of the temporary runner environment.
+*   **EPHEMERAL:** The session is **completely destroyed** when the workflow job ends (max ~6 hours). No data persists.
+*   **RDP Specifics:** Requires setting a password for the runner user and enabling RDP services/firewall rules on the fly.
 
-**IMPORTANT LIMITATIONS:**
+**Prerequisites:**
 
-*   **Ephemeral:** The environment exists *only* for the duration of the workflow job (max ~6 hours). It is completely destroyed afterwards.
-*   **No RDP:** Standard Remote Desktop is **not** available. Access is via a temporary SSH/Web connection provided by `tmate`.
-*   **Not a Persistent VM:** This is for temporary testing, debugging, or running long tasks within the CI/CD environment, not for hosting services.
-*   **Resource Limits:** Subject to GitHub Actions resource and usage limits based on your account type (free/paid).
+1.  **ngrok Account:** Sign up at [ngrok.com](https://ngrok.com).
+2.  **ngrok Authtoken:** Get it from your ngrok dashboard.
+3.  **GitHub Secret:** Create a repository secret named `NGROK_AUTHTOKEN` and paste your token there (`Settings` > `Secrets and variables` > `Actions`).
+4.  **RDP Client:** Use the built-in "Remote Desktop Connection" (`mstsc.exe`) on Windows or another RDP client.
 
 **How to Run:**
 
-1.  Go to the **Actions** tab in this repository.
-2.  Select the **"Temporary Windows Environment Session"** workflow from the left sidebar.
-3.  Click the **"Run workflow"** dropdown button on the right.
-4.  Click the green **"Run workflow"** button.
+1.  Go to the **Actions** tab.
+2.  Select the **"Temporary Windows RDP Session via ngrok"** workflow.
+3.  Click **"Run workflow"** -> **"Run workflow"**.
 
-**How to Connect (Using tmate):**
+**How to Connect:**
 
-1.  Once the workflow run starts, click on it to view its progress.
-2.  Click on the **"Start Temporary Windows Session"** job.
-3.  Wait for the **"Setup tmate session"** step to start running.
-4.  Look carefully in the logs of that step. You will see output similar to this:
+1.  Open the running workflow job.
+2.  Wait for the step **"Display Connection Info and Keep Job Alive"** to run.
+3.  Look in the logs for lines like:
     ```
-    Web shell: https://tmate.io/t/....
-    SSH: ssh ...@...tmate.io
+    Computer:      tcp://0.tcp.ngrok.io:12345
+    Username:      runneradmin
+    Password:      SomeRandomP@ssw0rd!
     ```
-5.  **To connect:**
-    *   **Web Shell:** Copy the `https://tmate.io/t/...` URL and paste it into your web browser.
-    *   **SSH:** Copy the `ssh ...@...tmate.io` command and paste it into your local terminal/shell (you need an SSH client installed).
-6.  You now have a command-line interface into the running GitHub Actions Windows runner. You can run commands, explore files, etc.
-7.  The session (and the workflow job) will remain active until you disconnect from `tmate` (type `exit` in the tmate shell) or the 6-hour job timeout is reached.
+4.  Open your local **Remote Desktop Connection** application (`mstsc.exe`).
+5.  In the **"Computer"** field, enter the **hostname and port** from the ngrok address.
+    *   *Example:* If the log shows `tcp://2.tcp.ngrok.io:12345`, you enter `2.tcp.ngrok.io:12345`
+6.  Click **"Connect"**.
+7.  When prompted for credentials:
+    *   Enter the **Username** shown in the logs (e.g., `runneradmin`). You might need to click "More choices" -> "Use a different account".
+    *   Enter the **Password** shown in the logs.
+8.  Accept any certificate warnings (as it's a temporary, self-managed machine).
+9.  If it works (and that's a big *if*), you should connect to the graphical desktop of the runner. **Be prepared for lag.**
 
-**Customization:**
+**Disconnecting:**
 
-*   Edit the `.github/workflows/temporary-windows-env.yml` file.
-*   Add `choco install ...` commands or uncomment/add `actions/setup-*` steps in the "Setup Environment" step to install the software you need *before* the `tmate` session starts.
+*   Disconnect or Log Off from the RDP session as usual.
+*   The GitHub Actions job will continue running until its 6-hour timeout. Manually cancelling the workflow run on GitHub is recommended when finished.
