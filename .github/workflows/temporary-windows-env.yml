@@ -1,4 +1,4 @@
-name: Temporary Windows RDP Session via Manual ngrok (Debug)
+name: Temporary Windows RDP Session via Manual ngrok (v3 Fix)
 
 on:
   workflow_dispatch: # Manual trigger
@@ -58,8 +58,8 @@ jobs:
           }
           Write-Host "Runner preparation complete."
 
-      # === Enhanced Ngrok Setup and Debugging ===
-      - name: Download, Configure and Start ngrok Manually (Debug)
+      # === Corrected Ngrok Setup ===
+      - name: Download, Configure and Start ngrok Manually (Fix)
         id: start_ngrok # Give step an ID
         shell: pwsh
         env:
@@ -100,19 +100,20 @@ jobs:
 
           # Configure ngrok Authtoken
           Write-Host "Configuring ngrok authtoken..."
-          try {
-              # Using -ErrorAction Stop to catch configuration errors
-              & $ngrokExe config add-authtoken $env:NGROK_AUTHTOKEN --log=stderr --ErrorAction Stop
-              Write-Host "ngrok authtoken configured."
-          } catch {
-               Write-Error "Failed to configure ngrok authtoken. Is the token valid? Error: $_"
-               exit 1
+          # Remove the invalid --ErrorAction flag here
+          & $ngrokExe config add-authtoken $env:NGROK_AUTHTOKEN --log=stderr
+          # Check the Exit Code from the ngrok command directly
+          if ($LASTEXITCODE -ne 0) {
+              Write-Error "ngrok config add-authtoken command failed with exit code $LASTEXITCODE. Is the token valid? Check ngrok logs."
+              exit 1
+          } else {
+              Write-Host "ngrok authtoken configuration command executed (Exit Code: $LASTEXITCODE)."
           }
 
           # Start ngrok tunnel for RDP (port 3389) in the background
           Write-Host "Starting ngrok tunnel process for TCP port 3389..."
           try {
-              # Start ngrok process. Logging to stderr might show errors if any.
+              # Start ngrok process.
               Start-Process $ngrokExe -ArgumentList "tcp", "3389", "--log=stderr" -NoNewWindow -ErrorAction Stop
               Write-Host "ngrok process requested to start."
           } catch {
@@ -125,14 +126,10 @@ jobs:
           $ngrokProcess = Get-Process -Name ngrok -ErrorAction SilentlyContinue
           if (-not $ngrokProcess) {
               Write-Error "ngrok process is NOT running after attempting to start! Check previous logs/errors."
-              # Try running ngrok directly in foreground to see output (will block further script execution here)
-              # Write-Host "Attempting to run ngrok in foreground for diagnostics..."
-              # & $ngrokExe tcp 3389 --log=stdout
               exit 1
           } else {
                Write-Host "ngrok process found running (PID: $($ngrokProcess.Id))."
           }
-
 
           # Wait for ngrok to establish tunnel and API to become available
           Write-Host "Waiting up to 15 seconds for ngrok tunnel API..."
@@ -172,7 +169,7 @@ jobs:
 
           # Set the URL as an output for the next step
           echo "ngrok_url=$ngrokUrl" >> $env:GITHUB_OUTPUT
-      # === End of Enhanced Ngrok Setup ===
+      # === End of Corrected Ngrok Setup ===
 
       # Display Connection Info - Uses output from the manual ngrok step
       - name: Display Connection Info and Keep Job Alive
