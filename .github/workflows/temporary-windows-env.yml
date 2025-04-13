@@ -1,4 +1,4 @@
-name: Temporary Windows RDP Session via Manual ngrok (Fixed Password)
+name: Temporary Windows RDP Session via Manual ngrok (Debug)
 
 on:
   workflow_dispatch: # Manual trigger
@@ -23,7 +23,6 @@ jobs:
           $username = $env:USERNAME # Get the current runner username (e.g., runneradmin)
           Write-Host "Setting fixed password for user '$username'..."
           # Use net user command to set password
-          $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
           try {
               net user $username $password
               Write-Host "Password set successfully for $username."
@@ -47,13 +46,7 @@ jobs:
           Write-Host "Configuring Windows Firewall for RDP..."
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
 
-          # Optional: Disable Network Level Authentication (NLA) - Less secure, might help compatibility in weird network setups
-          # Uncomment the next line if you face NLA-related connection issues (try without it first!)
-          # Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -value 0 -Force
-          # Write-Host "NLA Disabled (Less Secure)."
-
-
-          # Optional: Verify RDP Service is running
+          # --- Optional: Verify RDP Service ---
           $rdpService = Get-Service -Name TermService
           Write-Host "Remote Desktop Service (TermService) status: $($rdpService.Status)"
           if ($rdpService.Status -ne 'Running') {
@@ -63,74 +56,123 @@ jobs:
               $rdpService = Get-Service -Name TermService
               Write-Host "New TermService status: $($rdpService.Status)"
           }
-
           Write-Host "Runner preparation complete."
 
-      # Manually Download, Configure and Start ngrok
-      - name: Download, Configure and Start ngrok Manually
+      # === Enhanced Ngrok Setup and Debugging ===
+      - name: Download, Configure and Start ngrok Manually (Debug)
         id: start_ngrok # Give step an ID
         shell: pwsh
         env:
            NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
         run: |
+          # Check if Authtoken Secret is present
+          if (-not $env:NGROK_AUTHTOKEN) {
+              Write-Error "NGROK_AUTHTOKEN secret is missing or empty! Please configure it in repository settings."
+              exit 1
+          } else {
+              Write-Host "NGROK_AUTHTOKEN secret is present."
+          }
+
           # Download ngrok
           $ngrokZip = "$env:TEMP\ngrok.zip"
           $ngrokExe = "$env:TEMP\ngrok.exe"
           Write-Host "Downloading ngrok..."
-          Invoke-WebRequest -Uri "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip" -OutFile $ngrokZip
+          try {
+              Invoke-WebRequest -Uri "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip" -OutFile $ngrokZip -ErrorAction Stop
+          } catch {
+              Write-Error "Failed to download ngrok. Network issue? Error: $_"
+              exit 1
+          }
+
           Write-Host "Extracting ngrok..."
-          Expand-Archive -Path $ngrokZip -DestinationPath $env:TEMP -Force
+          try {
+              Expand-Archive -Path $ngrokZip -DestinationPath $env:TEMP -Force -ErrorAction Stop
+          } catch {
+              Write-Error "Failed to extract ngrok archive. Error: $_"
+              exit 1
+          }
+
           if (-not (Test-Path $ngrokExe)) {
-              Write-Error "ngrok.exe not found after extraction!"
+              Write-Error "ngrok.exe not found after extraction! Check TEMP directory: $env:TEMP"
               exit 1
           }
           Write-Host "ngrok extracted to $ngrokExe"
 
           # Configure ngrok Authtoken
           Write-Host "Configuring ngrok authtoken..."
-          & $ngrokExe config add-authtoken $env:NGROK_AUTHTOKEN --log=stderr
+          try {
+              # Using -ErrorAction Stop to catch configuration errors
+              & $ngrokExe config add-authtoken $env:NGROK_AUTHTOKEN --log=stderr --ErrorAction Stop
+              Write-Host "ngrok authtoken configured."
+          } catch {
+               Write-Error "Failed to configure ngrok authtoken. Is the token valid? Error: $_"
+               exit 1
+          }
 
           # Start ngrok tunnel for RDP (port 3389) in the background
-          Write-Host "Starting ngrok tunnel for TCP port 3389..."
-          # Start ngrok process. Logging to stderr might show errors if any.
-          Start-Process $ngrokExe -ArgumentList "tcp", "3389", "--log=stderr" -NoNewWindow
+          Write-Host "Starting ngrok tunnel process for TCP port 3389..."
+          try {
+              # Start ngrok process. Logging to stderr might show errors if any.
+              Start-Process $ngrokExe -ArgumentList "tcp", "3389", "--log=stderr" -NoNewWindow -ErrorAction Stop
+              Write-Host "ngrok process requested to start."
+          } catch {
+               Write-Error "Failed to start ngrok process. Error: $_"
+               exit 1
+          }
+
+          # Check if the ngrok process is actually running
+          Start-Sleep -Seconds 3 # Brief pause before checking
+          $ngrokProcess = Get-Process -Name ngrok -ErrorAction SilentlyContinue
+          if (-not $ngrokProcess) {
+              Write-Error "ngrok process is NOT running after attempting to start! Check previous logs/errors."
+              # Try running ngrok directly in foreground to see output (will block further script execution here)
+              # Write-Host "Attempting to run ngrok in foreground for diagnostics..."
+              # & $ngrokExe tcp 3389 --log=stdout
+              exit 1
+          } else {
+               Write-Host "ngrok process found running (PID: $($ngrokProcess.Id))."
+          }
+
 
           # Wait for ngrok to establish tunnel and API to become available
-          Write-Host "Waiting for ngrok tunnel to initialize..."
-          Start-Sleep -Seconds 8 # Give ngrok ~8 seconds
+          Write-Host "Waiting up to 15 seconds for ngrok tunnel API..."
+          Start-Sleep -Seconds 15 # Increased wait time
 
           # Query the local ngrok API to get the public URL
-          Write-Host "Querying ngrok API for tunnel URL..."
-          $maxAttempts = 5
+          Write-Host "Querying ngrok API for tunnel URL (retries up to 6 times)..."
+          $maxAttempts = 6
           $attempt = 0
           $ngrokUrl = $null
           while ($attempt -lt $maxAttempts -and -not $ngrokUrl) {
               $attempt++
+              Write-Host "API Query Attempt $attempt/$maxAttempts..."
               try {
-                  $tunnels = Invoke-RestMethod -Uri "http://127.0.0.1:4040/api/tunnels" -Method Get -TimeoutSec 5 -ErrorAction Stop
-                  # Find the TCP tunnel (usually the first/only one in this simple setup)
+                  # Increased timeout for the request
+                  $tunnels = Invoke-RestMethod -Uri "http://127.0.0.1:4040/api/tunnels" -Method Get -TimeoutSec 10 -ErrorAction Stop
                   $tcpTunnel = $tunnels.tunnels | Where-Object { $_.proto -eq 'tcp' } | Select-Object -First 1
                   if ($tcpTunnel) {
                       $ngrokUrl = $tcpTunnel.public_url
                       Write-Host "Successfully retrieved ngrok URL: $ngrokUrl"
                   } else {
-                       Write-Host "No TCP tunnel found yet in ngrok API response (Attempt $attempt/$maxAttempts)..."
-                       Start-Sleep -Seconds 5
+                       Write-Warning "No TCP tunnel found yet in ngrok API response (Attempt $attempt/$maxAttempts)... Will retry."
+                       Start-Sleep -Seconds 6 # Wait longer between retries
                   }
               } catch {
-                  Write-Warning "Failed to connect to ngrok API or parse response (Attempt $attempt/$maxAttempts). Error: $($_.Exception.Message)"
-                  Start-Sleep -Seconds 5
+                  Write-Warning "Failed to connect to ngrok API or parse response (Attempt $attempt/$maxAttempts). Is ngrok running and connected? Error: $($_.Exception.Message)"
+                  Start-Sleep -Seconds 6 # Wait longer between retries
               }
           }
 
           if (-not $ngrokUrl) {
-              Write-Error "Failed to retrieve ngrok public URL after $maxAttempts attempts. Check ngrok logs/status."
-              # Consider adding more detailed ngrok log retrieval here if needed
+              Write-Error "CRITICAL: Failed to retrieve ngrok public URL after $maxAttempts attempts."
+              Write-Error "Possible causes: Invalid Authtoken, Network block preventing ngrok connection, ngrok internal error."
+              Write-Error "Check your NGROK_AUTHTOKEN secret and the ngrok dashboard (https://dashboard.ngrok.com/status/tunnels) for clues."
               exit 1
           }
 
           # Set the URL as an output for the next step
           echo "ngrok_url=$ngrokUrl" >> $env:GITHUB_OUTPUT
+      # === End of Enhanced Ngrok Setup ===
 
       # Display Connection Info - Uses output from the manual ngrok step
       - name: Display Connection Info and Keep Job Alive
@@ -142,7 +184,7 @@ jobs:
         run: |
           # Check if ngrok URL was successfully obtained by the previous step
           if (-not $env:NGROK_URL) {
-              Write-Error "FATAL: ngrok URL was not passed from the previous step. Workflow logic error."
+              Write-Error "FATAL: ngrok URL was not passed from the previous step. Workflow logic error or ngrok failed."
               exit 1
           }
 
@@ -174,4 +216,6 @@ jobs:
         run: |
           Write-Host "RDP session job is ending."
           # Try to kill the ngrok process gracefully (might not always work)
+          Write-Host "Attempting to stop ngrok process..."
           Get-Process | Where-Object { $_.ProcessName -eq 'ngrok' } | Stop-Process -Force -ErrorAction SilentlyContinue
+          Write-Host "ngrok stop attempted."
