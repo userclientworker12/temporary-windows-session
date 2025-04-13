@@ -67,7 +67,8 @@ jobs:
 
       # ***** CHANGE IS HERE *****
       - name: Start ngrok tunnel for RDP (Port 3389)
-        uses: ngrok/ngrok-github-action@v1 # Use the major version tag @v1 instead of @v1.1.0
+        # Use the full commit SHA for version v1.1.0 to bypass tag resolution issues
+        uses: ngrok/ngrok-github-action@9f1d6e3baf0e243a4a7b571074885d0a54a344a1
       # ***** END OF CHANGE *****
         id: ngrok # Give the step an ID to access its output
         with:
@@ -89,11 +90,18 @@ jobs:
           RDP_PASSWORD: ${{ steps.prepare_rdp.outputs.rdp_password }}
           NGROK_URL: ${{ steps.ngrok.outputs.url }} # Get public URL from ngrok step
         run: |
+          # Check if ngrok URL was successfully obtained
+          if (-not $env:NGROK_URL) {
+              Write-Error "Failed to get ngrok URL. Check the 'Start ngrok tunnel' step logs for errors."
+              # Attempt to display logs from ngrok step if possible (might require action modification or different approach)
+              exit 1
+          }
+
           Write-Host "-----------------------------------------------------"
           Write-Host "RDP Session Ready (via ngrok Tunnel)"
           Write-Host "-----------------------------------------------------"
           Write-Host "Use Remote Desktop Connection on your local machine:"
-          Write-Host "Computer:      ${{ steps.ngrok.outputs.url }}" # Example: tcp://0.tcp.ngrok.io:12345
+          Write-Host "Computer:      $env:NGROK_URL" # Example: tcp://0.tcp.ngrok.io:12345
           Write-Host "Username:      $env:RDP_USERNAME"
           Write-Host "Password:      $env:RDP_PASSWORD"
           Write-Host "-----------------------------------------------------"
