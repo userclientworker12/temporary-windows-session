@@ -1,4 +1,4 @@
-name: Temporary Windows RDP Session via Manual ngrok
+name: Temporary Windows RDP Session via Manual ngrok (Fixed Password)
 
 on:
   workflow_dispatch: # Manual trigger
@@ -13,14 +13,15 @@ jobs:
       - name: Check out repository code
         uses: actions/checkout@v4
 
-      - name: Prepare Runner for RDP and Generate Password
+      - name: Prepare Runner for RDP and Set Fixed Password
         id: prepare_rdp
         shell: pwsh
         run: |
-          # --- Generate and Set Password ---
-          $password = -join ((65..90) + (97..122) + (48..57) + (33..47) | Get-Random -Count 16 | % {[char]$_})
+          # --- Set FIXED Password ---
+          # WARNING: Hardcoding passwords is a security risk! Consider using GitHub Secrets instead.
+          $password = "PASSword!"
           $username = $env:USERNAME # Get the current runner username (e.g., runneradmin)
-          Write-Host "Setting password for user '$username'..."
+          Write-Host "Setting fixed password for user '$username'..."
           # Use net user command to set password
           $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
           try {
@@ -31,12 +32,12 @@ jobs:
               exit 1 # Fail the job if password cannot be set
           }
 
-          # Mask the password in logs
+          # Mask the password in logs (still good practice even if fixed)
           Write-Host "::add-mask::$password"
           # Set outputs for later steps
           echo "rdp_username=$username" >> $env:GITHUB_OUTPUT
           echo "rdp_password=$password" >> $env:GITHUB_OUTPUT
-          Write-Host "Generated temporary RDP password for user $username."
+          Write-Host "Fixed RDP password configured for user $username."
 
           # --- Enable RDP ---
           Write-Host "Enabling Remote Desktop..."
@@ -65,7 +66,7 @@ jobs:
 
           Write-Host "Runner preparation complete."
 
-      # ***** NEW NGROK SETUP *****
+      # Manually Download, Configure and Start ngrok
       - name: Download, Configure and Start ngrok Manually
         id: start_ngrok # Give step an ID
         shell: pwsh
@@ -130,14 +131,13 @@ jobs:
 
           # Set the URL as an output for the next step
           echo "ngrok_url=$ngrokUrl" >> $env:GITHUB_OUTPUT
-      # ***** END OF NEW NGROK SETUP *****
 
       # Display Connection Info - Uses output from the manual ngrok step
       - name: Display Connection Info and Keep Job Alive
         shell: pwsh
         env:
           RDP_USERNAME: ${{ steps.prepare_rdp.outputs.rdp_username }}
-          RDP_PASSWORD: ${{ steps.prepare_rdp.outputs.rdp_password }}
+          RDP_PASSWORD: ${{ steps.prepare_rdp.outputs.rdp_password }} # This will now always be "PASSword!"
           NGROK_URL: ${{ steps.start_ngrok.outputs.ngrok_url }} # Get public URL from manual ngrok step
         run: |
           # Check if ngrok URL was successfully obtained by the previous step
@@ -152,7 +152,7 @@ jobs:
           Write-Host "Use Remote Desktop Connection on your local machine:"
           Write-Host "Computer:      $env:NGROK_URL" # Example: tcp://0.tcp.ngrok.io:12345
           Write-Host "Username:      $env:RDP_USERNAME"
-          Write-Host "Password:      $env:RDP_PASSWORD"
+          Write-Host "Password:      $env:RDP_PASSWORD  (<- Should be PASSword!)"
           Write-Host "-----------------------------------------------------"
           Write-Host "IMPORTANT NOTES:"
           Write-Host "* The address looks like 'tcp://HOSTNAME:PORT'."
@@ -160,6 +160,7 @@ jobs:
           Write-Host "*   (e.g., '2.tcp.ngrok.io:12345') as the 'Computer'."
           Write-Host "* Performance will likely be POOR and LAGGY."
           Write-Host "* This session will automatically end when the job times out (~6 hours) or is cancelled."
+          Write-Host "* Password is set to 'PASSword!' - Handle with care!"
           Write-Host "-----------------------------------------------------"
 
           # Keep the script running
